@@ -1,0 +1,147 @@
+---
+title: "wCer1 data analysis"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(TailRank)
+library(cowplot)
+library(ggbeeswarm)
+library(rethinking)
+set_ulam_cmdstan(TRUE)
+```
+```{r}
+d <- read.csv("~/Documents/post-doc/research/crossings/crossing-clean.csv", header = T, sep = ",")
+# Carfefull with cage 20. Infection unknown
+d$hatch_rate <- d$hatched/d$egg_tot
+d[d$hatch_rate == "NaN",] <- 0
+d <- d %>% 
+    mutate(cross_type = case_when(infection_F == 0 & infection_M == 0 ~ "bothNeg" , # both tests: group A
+                                  infection_F == 0 & infection_M == 1 ~ "Mpos",
+                                  infection_F == 1 & infection_M == 0 ~ "Fpos",
+                                  infection_F == 1 & infection_M == 1 ~ "FMpos"
+                                  #infection_F && infection_M ~ "both_neg",
+                                  #infection_F && infection_M ~ "both_neg"
+                             #xor(test1, test2) ~ "B", # one test: group B
+                             #!test1 & !test2 ~ "C" # neither test: group C
+    ))
+d <- d %>% 
+    mutate(same_pop = case_when(population_F == population_M ~  1, # both tests: group A
+                                population_F != population_M ~  0
+                                  #infection_F && infection_M ~ "both_neg",
+                                  #infection_F && infection_M ~ "both_neg"
+                             #xor(test1, test2) ~ "B", # one test: group B
+                             #!test1 & !test2 ~ "C" # neither test: group C
+    ))
+#d$gen <- as.numeric(d$genotype)
+ENP <- ggplot(d, aes(x = cross_type, y = egg_tot, color = cross_type)) + geom_beeswarm(cex = 3)
+HRP <- ggplot(d, aes(x = cross_type, y = hatch_rate, color = cross_type)) + geom_beeswarm(cex = 3)
+HNP <- ggplot(d, aes(x = cross_type, y = hatched, color = cross_type)) + geom_beeswarm(cex = 3)
+plot_grid(ENP, HNP, HRP)
+```
+```{r}
+labs <- c("all_neg", "FM_pos", "F_pos", "M_pos")
+d.arraged <- arrange(d, desc(hatch_rate), desc(egg_tot))
+dat <- list (
+  E = d.arraged$egg_tot,
+  NH = d.arraged$hatched,
+  #HR = d$hatch.rate,
+  ID = seq(1,nrow(d.arraged)),
+  G = as.numeric(as.factor(d.arraged$cross_type)),
+  P = d.arraged$same_pop + 1
+  )
+m.1 <- ulam(
+  alist(
+  NH ~ dbinom(E, p), # this is wrong here, there is not just one trial.
+  logit(p) <- a[G], #+ b[G],
+  a[G] ~ dnorm(0, 1.5)
+  #b[G] ~ dnorm(0, 10)
+ ), data = dat, chains = 4, log_lik = TRUE, cmdstan = TRUE)
+#prior.1. <-  extract.prior(m.1, n=1e4)
+#p.1 <- inv_logit(prior.1$a)
+dens(p.1, adj=0.1)
+precis(m.1, depth=2)
+```
+```{r}
+post.1 <- extract.samples(m.1)
+h.1 <- inv_logit(post.1$a)
+plot(precis(as.data.frame(h.1)), xlim=c(0,1), labels = labs)
+```
+```{r}
+postcheck(m.1)
+```
+
+```{r}
+m.2 <- ulam(
+  alist(
+  NH ~ dbinom(E, p),
+  logit(p) <- a[G] + b[ID], # genotype and cage are independant here. Maybe they hould be nested, as mixed model.
+  a[G] ~ dnorm(0, 1.5), # Here cage is a mediator, it should be nested factor.
+  b[ID] ~ dnorm(0, 1.5)
+ ), data = dat, chains = 4, log_lik = TRUE, cmdstan = TRUE)
+prior.2 <-  extract.prior(m.2, n=1e4)
+#p.2 <- inv_logit(prior.2$b)
+#dens(p.2, adj=0.1)
+precis(m.2, depth=2)
+```
+```{r}
+post.2 <- extract.samples(m.2)
+h.2 <- inv_logit(post.2$a)
+plot(precis(as.data.frame(h.2)), xlim=c(0,1), labels = labs)
+```
+```{r}
+postcheck(m.2)
+```
+```{r}
+m.3 <- ulam(
+  alist(
+  NH ~ dbinom(E, p),
+  logit(p) <- a[G] + b[ID],
+  a[G] ~ dnorm(0, 1.5),
+  b[ID] ~ dnorm(b_bar, sigmaB),
+  b_bar ~ dnorm(0, 1.5),
+  sigmaB ~ dexp(1)
+ ), data = dat, chains = 4, log_lik = TRUE, cmdstan = TRUE)
+prior.3 <-  extract.prior(m.3, n=1e4)
+p.3 <-inv_logit(prior.3$a)
+dens(p.3, adj=0.1)
+precis(m.3, depth=2)
+```
+```{r}
+post.3 <- extract.samples(m.3)
+h.3 <- inv_logit(post.3$a)
+plot(precis(as.data.frame(h.3)), xlim=c(0,1), labels = labs)
+```
+```{r}
+postcheck(m.3)
+```
+```{r}
+m.4 <- ulam(
+  alist(
+  NH ~ dbetabinom(E, pbar, theta),
+  logit(pbar) <- a[G],
+  a[G] ~ dnorm(0, 1.5),
+  transpars> theta <<- phi + 2.0,
+  phi ~ dexp(1)
+ ), data = dat, chains = 4, log_lik = TRUE, cmdstan = TRUE)
+prior.4 <-  extract.prior(m.4, n=1e4)
+p.4 <-inv_logit(prior.4$a)
+dens(p.4, adj=0.1)
+precis(m.4, depth=2)
+```
+```{r}
+post.4 <- extract.samples(m.4)
+h.4 <- inv_logit(post.4$a)
+plot(precis(as.data.frame(h.4)), xlim=c(0,1), labels = labs)
+```
+
+```{r}
+postcheck(m.4)
+```
